@@ -1,0 +1,9 @@
+name: ci-probe
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "probe ok ${GITHUB_SHA}"
