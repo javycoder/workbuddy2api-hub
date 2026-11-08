@@ -13599,9 +13599,12 @@ def backfill_reasoning_content(messages, model, thinking_enabled=None):
     return out
 
 
-def mirror_kimi_reasoning(messages, model):
-    """Mirror Kimi reasoning_content into the upstream reasoning field."""
-    if not str(model or "").lower().startswith("kimi"):
+def mirror_upstream_reasoning(messages, model):
+    """Mirror reasoning_content for models whose upstream reads reasoning."""
+    model_prefixes = (
+        "kimi", "glm", "minimax", "mimo", "step", "space-bunny",
+    )
+    if not str(model or "").lower().startswith(model_prefixes):
         return messages
     if not isinstance(messages, list):
         return messages
@@ -14661,7 +14664,7 @@ def build_upstream_body(payload):
     repaired, _repacked = repack_tool_result_blocks(repaired)
     repaired, _cleaned = cleanup_orphan_tool_calls(repaired)
     body["messages"] = repaired
-    body["messages"] = mirror_kimi_reasoning(body["messages"], model)
+    body["messages"] = mirror_upstream_reasoning(body["messages"], model)
     translate_max_completion_tokens(body)
     # Upstream GPT-family models enforce a minimum max_output_tokens >= 16;
     # smaller values (e.g. max_tokens=1 from probes) fail with 400 integer_below_min_value (#364, #252).

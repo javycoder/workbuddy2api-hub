@@ -1,10 +1,10 @@
-"""Kimi historical reasoning mirror regression tests."""
+"""Historical reasoning mirror regression tests."""
 import json
 import os
 import sys
 import tempfile
 
-_startup_dir = tempfile.TemporaryDirectory(prefix="kimi-reasoning-mirror-")
+_startup_dir = tempfile.TemporaryDirectory(prefix="upstream-reasoning-mirror-")
 os.environ["ACCOUNTS_DIR"] = _startup_dir.name
 os.environ["WB_PROXY_USAGE_DIR"] = _startup_dir.name
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -12,6 +12,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import wb_proxy as P
 
 PASS = FAIL = 0
+MIRRORED_MODELS = (
+    "kimi-k2", "glm-4.6", "minimax-m2", "mimo-v2", "step-3", "space-bunny",
+)
 
 
 def check(name, cond, extra=""):
@@ -29,26 +32,26 @@ def assistant_messages(body):
             if isinstance(message, dict) and message.get("role") == "assistant"]
 
 
-print("[1] Kimi mirrors non-empty reasoning_content")
-trace = " Kimi thought with leading and trailing spaces "
-body = P.build_upstream_body({
-    "model": "kimi-k2",
-    "messages": [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello", "reasoning_content": trace},
-    ],
-})
-out_assistant = assistant_messages(body)[0]
-check("reasoning is the original reasoning_content",
-      out_assistant.get("reasoning") == trace, json.dumps(out_assistant, ensure_ascii=False))
-check("reasoning is not a placeholder space", out_assistant.get("reasoning") != " ",
-      repr(out_assistant.get("reasoning")))
+print("[1] Supported models mirror non-empty reasoning_content")
+trace = " model thought with leading and trailing spaces "
+for model in MIRRORED_MODELS:
+    body = P.build_upstream_body({
+        "model": model,
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello", "reasoning_content": trace},
+        ],
+    })
+    assistant = assistant_messages(body)[0]
+    check("%s mirrors the original reasoning_content" % model,
+          assistant.get("reasoning") == trace,
+          json.dumps(assistant, ensure_ascii=False))
 
 print()
-print("[2] Kimi mirrors after adjacent assistant repair")
-tool_trace = "real reasoning after tool call"
+print("[2] GLM mirrors after adjacent assistant repair")
+tool_trace = "real GLM reasoning after tool call"
 body = P.build_upstream_body({
-    "model": "kimi-k2",
+    "model": "glm-4.6",
     "messages": [
         {"role": "user", "content": "look"},
         {"role": "assistant", "content": None, "tool_calls": [{
@@ -68,7 +71,7 @@ check("merged reasoning remains the original trace",
       json.dumps(merged_assistants[0], ensure_ascii=False))
 
 print()
-print("[3] Kimi does not invent reasoning")
+print("[3] Whitespace reasoning_content is not mirrored")
 body = P.build_upstream_body({
     "model": "kimi-k2",
     "messages": [
@@ -78,31 +81,28 @@ body = P.build_upstream_body({
     ],
 })
 silent_assistants = assistant_messages(body)
-check("all assistants stay without reasoning",
+check("whitespace reasoning_content adds no reasoning field",
       all("reasoning" not in message for message in silent_assistants),
       json.dumps(silent_assistants, ensure_ascii=False))
-check("whitespace reasoning_content is not mirrored",
-      all(message.get("reasoning") != "  " for message in silent_assistants),
-      json.dumps(silent_assistants, ensure_ascii=False))
 
 print()
-print("[4] DeepSeek zero-trace placeholder behavior remains")
+print("[4] Existing non-empty reasoning is not overwritten")
+existing = " existing reasoning "
 body = P.build_upstream_body({
-    "model": "deepseek-v4.1-flash",
-    "thinking": {"type": "enabled"},
+    "model": "minimax-m2",
     "messages": [
         {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
+        {"role": "assistant", "content": "hello",
+         "reasoning": existing, "reasoning_content": trace},
     ],
 })
-deepseek_assistant = assistant_messages(body)[0]
-check("DeepSeek keeps the single-space placeholder",
-      deepseek_assistant.get("reasoning") == " ",
-      json.dumps(deepseek_assistant, ensure_ascii=False))
+assistant = assistant_messages(body)[0]
+check("existing reasoning remains unchanged", assistant.get("reasoning") == existing,
+      json.dumps(assistant, ensure_ascii=False))
 
 print()
-print("[5] Other models do not gain reasoning")
-for model in ("glm-4.6", "gpt-5"):
+print("[5] GPT and hy do not gain reasoning")
+for model in ("gpt-5", "hy4-preview"):
     body = P.build_upstream_body({
         "model": model,
         "messages": [
@@ -115,15 +115,40 @@ for model in ("glm-4.6", "gpt-5"):
           json.dumps(body, ensure_ascii=False))
 
 print()
-print("[6] Kimi body does not gain DeepSeek thinking")
+print("[6] DeepSeek placeholder and thinking backfill remain unchanged")
 body = P.build_upstream_body({
-    "model": "kimi-k2",
-    "messages": [{"role": "user", "content": "hi"}],
+    "model": "deepseek-v4.1-flash",
+    "thinking": {"type": "enabled"},
+    "reasoning_effort": "high",
+    "messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ],
 })
-check("top-level thinking is absent", "thinking" not in body, json.dumps(body))
+deepseek_assistant = assistant_messages(body)[0]
+check("DeepSeek without thought keeps only the space placeholder",
+      deepseek_assistant.get("reasoning") == " ",
+      json.dumps(deepseek_assistant, ensure_ascii=False))
+check("DeepSeek thinking remains enabled",
+      body.get("thinking") == {"type": "enabled"}, json.dumps(body))
+check("DeepSeek reasoning effort remains set",
+      body.get("reasoning_effort") == "high", json.dumps(body))
 
 print()
-print("[7] Responses reasoning summary survives the chat path")
+print("[7] Mirrored models do not gain DeepSeek reasoning controls")
+for model in MIRRORED_MODELS:
+    body = P.build_upstream_body({
+        "model": model,
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    check("%s body has no thinking field" % model,
+          "thinking" not in body, json.dumps(body))
+    check("%s body has no injected reasoning effort" % model,
+          "reasoning_effort" not in body and "reasoningEffort" not in body,
+          json.dumps(body))
+
+print()
+print("[8] Responses reasoning summary survives the chat path")
 summary = " Responses summary with original spacing "
 responses_payload = {
     "model": "kimi-k2",
