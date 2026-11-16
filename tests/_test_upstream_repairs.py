@@ -288,8 +288,13 @@ check("a trailing plain assistant folds into the content-less call message",
 not_empty = [assistant_with_calls("c0"),
              {"role": "assistant", "content": "kept",
               "tool_calls": assistant_with_calls("c1")["tool_calls"]}]
-_, changed12 = P.merge_adjacent_tool_calls(copy.deepcopy(not_empty))
-check("a trailing batch with real content is not merged", not changed12)
+merged_c, changed12 = P.merge_adjacent_tool_calls(copy.deepcopy(not_empty))
+check("a trailing batch with real content is merged too", changed12)
+check("both calls survive the merge",
+      [tc["id"] for tc in merged_c[0]["tool_calls"]] == ["c0", "c1"],
+      merged_c[0].get("tool_calls"))
+check("the trailing text is carried, not dropped",
+      merged_c[0].get("content") == "kept", merged_c[0].get("content"))
 
 separated = [assistant_with_calls("c0"),
              {"role": "user", "content": "hi"},
@@ -391,6 +396,67 @@ normal_chat = {"choices": [{"message": {
 normal_resp = P.chat_to_response(normal_chat, "m", set(), {}, {})
 check("a normal answer is not rejected",
       not P.reasoning_only_response(normal_resp))
+
+print()
+print()
+print("[3c] an early tool result is moved behind its call")
+
+early = [{"role": "user", "content": "go"},
+         tool_result("c0"),
+         assistant_with_calls("c0")]
+moved_e, changed_e1 = P.reorder_early_tool_results(copy.deepcopy(early))
+check("a result before its call is reported as a change", changed_e1)
+check("the result now follows the call",
+      [m.get("role") for m in moved_e[1:]] == ["assistant", "tool"],
+      [m.get("role") for m in moved_e[1:]])
+moved_result = [m for m in moved_e if m.get("role") == "tool"][0]
+check("only the order changes, the content is identical",
+      moved_result.get("tool_call_id") == "c0"
+      and moved_result.get("content") == "ok")
+
+already_ordered = [{"role": "user", "content": "go"},
+                   assistant_with_calls("c0"),
+                   tool_result("c0")]
+same_e, changed_e2 = P.reorder_early_tool_results(copy.deepcopy(already_ordered))
+check("an already-correct batch is left alone", not changed_e2)
+
+no_call = [{"role": "user", "content": "go"},
+           tool_result("ghost"),
+           {"role": "assistant", "content": "done"}]
+kept_e, changed_e3 = P.reorder_early_tool_results(copy.deepcopy(no_call))
+check("a result with no call is left for cleanup_orphan_tool_calls",
+      not changed_e3)
+
+two_turns = [{"role": "user", "content": "go"},
+             assistant_with_calls("c0"),
+             tool_result("c0"),
+             {"role": "user", "content": "again"},
+             tool_result("c1"),
+             assistant_with_calls("c1")]
+moved2_e, changed_e4 = P.reorder_early_tool_results(copy.deepcopy(two_turns))
+check("a later turn's early result is moved as well", changed_e4)
+check("each result keeps its own pair",
+      [m.get("tool_call_id") for m in moved2_e if m.get("role") == "tool"]
+      == ["c0", "c1"], moved2_e)
+
+# End to end: the Responses shape that used to leave as [tool, assistant(call)].
+early_payload = {
+    "model": "m",
+    "input": [
+        {"type": "message", "role": "user",
+         "content": [{"type": "input_text", "text": "go"}]},
+        {"type": "function_call_output", "call_id": "c0", "output": "ok"},
+        {"type": "function_call", "name": "f", "arguments": "{}", "call_id": "c0"},
+        {"type": "message", "role": "user",
+         "content": [{"type": "input_text", "text": "next"}]},
+    ],
+    "tools": [{"type": "function", "name": "f",
+               "parameters": {"type": "object", "properties": {}}}],
+}
+early_body = P.build_upstream_body(P.responses_to_chat(early_payload))
+early_roles = [m.get("role") for m in early_body["messages"]]
+check("build_upstream_body emits the call before its result",
+      early_roles[-3:] == ["assistant", "tool", "user"], early_roles)
 
 print()
 print("[4] integration: build_upstream_body applies the repairs")
