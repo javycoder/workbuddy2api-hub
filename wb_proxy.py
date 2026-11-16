@@ -1225,10 +1225,11 @@ class BadJSON(Exception):
 # ACAO header - that keeps a stray page on the LAN from reading their replies.
 CORS_PATH_PREFIXES = ("/v1", "/chat", "/completions", "/models", "/responses")
 # Management paths that happen to live under /v1 must not be treated as API:
-# /v1/usage reports account-level spend and is gated by the panel session.
-MANAGEMENT_PATH_PREFIXES = ("/v1/usage", "/usage", "/accounts", "/settings",
-                            "/tasks", "/scheduler", "/panel", "/logs",
-                            "/codearts")
+# /v1/usage reports account-level spend and /v1/accounts serves the external
+# key API's redacted account listings - both are panel/key gated, not CORS API.
+MANAGEMENT_PATH_PREFIXES = ("/v1/usage", "/v1/accounts", "/usage", "/accounts",
+                            "/settings", "/tasks", "/scheduler", "/panel",
+                            "/logs", "/codearts")
 def cors_origin_allowed(path):
     """True when the OpenAI-style API path should advertise CORS."""
     path = (path or "").split("?")[0]

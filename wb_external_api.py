@@ -205,8 +205,13 @@ def match_key(accounts_dir, supplied):
     supplied = str(supplied or "").strip()
     if not supplied:
         return None
+    # hmac.compare_digest 的 str 版要求两侧都是 ASCII-only；带非 ASCII 的
+    # Bearer 值会让 TypeError 穿透到 HTTP 层（连接无响应断开）。按字节比较，
+    # 存储侧密钥恒为 token_urlsafe 生成的 ASCII，utf-8 编码无损。
+    supplied_bytes = supplied.encode("utf-8", "replace")
     for entry in list_keys(accounts_dir):
-        if entry.get("enabled") and hmac.compare_digest(supplied, entry.get("key") or ""):
+        if entry.get("enabled") and hmac.compare_digest(
+                supplied_bytes, str(entry.get("key") or "").encode("utf-8", "replace")):
             return copy.deepcopy(entry)
     return None
 
@@ -349,11 +354,16 @@ def _compact_call_log(path):
     except (FileNotFoundError, OSError):
         return
 
+    # 压缩目标取 75% 水位而不是贴着 CALL_LOG_MAX_BYTES 收敛：贴上限时下一条
+    # 追加就会再度越限、再度全量读+重写（2MB 级 IO 落在每次外部调用的热路径
+    # 上）；压到 75%，两次压缩之间能积累上千条写入。运行时读取，测试对
+    # CALL_LOG_MAX_BYTES 的调整能同步生效。
+    keep_bytes = int(CALL_LOG_MAX_BYTES * 0.75)
     selected = []
     selected_bytes = 0
     for line in reversed(tail):
         line_bytes = len(line.encode("utf-8"))
-        if selected and selected_bytes + line_bytes > CALL_LOG_MAX_BYTES:
+        if selected and selected_bytes + line_bytes > keep_bytes:
             break
         selected.append(line)
         selected_bytes += line_bytes
