@@ -14448,6 +14448,10 @@ def _merge_assistant_content(prev_content, next_content):
     The upstream accepts either a string or a parts list, so folding a
     text-carrying assistant into a tool_calls assistant has to rebuild the same
     shape: empty values disappear, and a str + list mix becomes a parts list.
+    A value that is neither str nor list (a malformed client payload the
+    sanitizer passes through) folds to None - keep the previous content as-is
+    and let the upstream reject the shape itself, instead of raising here or
+    splicing dict keys into the parts list.
     """
     def _empty(value):
         return value is None or value == "" or value == []
@@ -14460,9 +14464,9 @@ def _merge_assistant_content(prev_content, next_content):
         return prev_content + "\n" + next_content
     if isinstance(prev_content, list) and isinstance(next_content, list):
         return list(prev_content) + list(next_content)
-    if isinstance(prev_content, str):
+    if isinstance(prev_content, str) and isinstance(next_content, list):
         return [{"type": "text", "text": prev_content}] + list(next_content)
-    if isinstance(next_content, str):
+    if isinstance(prev_content, list) and isinstance(next_content, str):
         return list(prev_content) + [{"type": "text", "text": next_content}]
     return None
 

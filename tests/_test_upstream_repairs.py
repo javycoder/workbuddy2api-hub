@@ -438,6 +438,42 @@ check("a later turn's early result is moved as well", changed_e4)
 check("each result keeps its own pair",
       [m.get("tool_call_id") for m in moved2_e if m.get("role") == "tool"]
       == ["c0", "c1"], moved2_e)
+check("the moved result lands directly behind its own assistant",
+      [m.get("role") for m in moved2_e[4:]] == ["assistant", "tool"]
+      and moved2_e[5].get("tool_call_id") == "c1",
+      [m.get("role") for m in moved2_e])
+
+# Same batch, one result early and one already in place: the early one is
+# appended after the results that were already behind the assistant.
+mixed_batch = [{"role": "user", "content": "go"},
+               tool_result("c1"),
+               assistant_with_calls("c0", "c1"),
+               tool_result("c0")]
+moved3_e, changed_e5 = P.reorder_early_tool_results(copy.deepcopy(mixed_batch))
+check("a partly-early batch is reported as a change", changed_e5)
+check("the early result joins the already-placed one",
+      [m.get("role") for m in moved3_e[1:]] == ["assistant", "tool", "tool"]
+      and [m.get("tool_call_id") for m in moved3_e[2:]] == ["c0", "c1"],
+      [m.get("role") for m in moved3_e])
+
+print()
+print("[3d] content folding keeps its shape on malformed values")
+
+check("str + list rebuilds a parts list",
+      P._merge_assistant_content("before", [{"type": "text", "text": "after"}])
+      == [{"type": "text", "text": "before"}, {"type": "text", "text": "after"}])
+check("list + str rebuilds a parts list",
+      P._merge_assistant_content([{"type": "text", "text": "before"}], "after")
+      == [{"type": "text", "text": "before"}, {"type": "text", "text": "after"}])
+check("str + str joins with a newline",
+      P._merge_assistant_content("a", "b") == "a\nb")
+check("a scalar prev value folds to None instead of raising",
+      P._merge_assistant_content(7, "after") is None)
+check("a scalar next value folds to None instead of raising",
+      P._merge_assistant_content("before", 7) is None)
+check("a dict value folds to None instead of splicing its keys",
+      P._merge_assistant_content("before", {"k": "v"}) is None
+      and P._merge_assistant_content({"k": "v"}, "after") is None)
 
 # End to end: the Responses shape that used to leave as [tool, assistant(call)].
 early_payload = {
