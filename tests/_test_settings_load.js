@@ -51,6 +51,22 @@ const SETTINGS = {
   daily_chat_web_attempts_default: 3,
   local_web_tools: true,
   remaining_priority_enabled: true,
+  device_token_status: {
+    source: 'file',
+    configured_file: '/data/device-token',
+    loaded: true,
+    length: 48,
+    cached_at: 1760000000,
+  },
+  desktop_chat_compat: false,
+  outbound_tls: {
+    requested_mode: 'auto',
+    bridge_state: 'ready',
+    last_route: 'bridge',
+    last_fallback_reason: '',
+    last_fallback_at: '',
+    auto_retry_available: true,
+  },
   version: 'v1.6.14',
   accounts_dir: '/data/accounts',
   usage_dir: '/data/usage',
@@ -167,10 +183,23 @@ global.__toasts = toasts;
   assert.equal(element('setRemainingPriority').checked, true,
     '剩余用量优先调度的复选框没写回');
   assert.equal(element('setRemainingPriorityState').textContent, '(已启用)');
+  assert.equal(element('setDeviceTokenFile').value, '/data/device-token',
+    '设备 token 文件路径没写回');
+  assert.equal(element('setDeviceTokenState').textContent,
+    '(已加载 · 48 字符 · 已脱敏)');
+  assert.ok(element('setDeviceTokenMeta').textContent.includes('值已脱敏'),
+    '设备 token 状态应明确标注已脱敏');
+  assert.equal(element('setDesktopChatCompat').checked, false);
+  assert.equal(element('setDesktopChatCompatState').textContent, '(默认关闭)');
   assert.equal(element('setLimitsPerRealm').checked, true, '有分版本覆盖时应勾上');
   assert.equal(element('setWinMaxHeight').value, '640', '窗口限高输入框没写回');
   assert.equal(element('setWinMaxHeightState').textContent, '(当前 640px)',
     '窗口限高状态文案没写回');
+  assert.equal(element('setOutboundTlsMode').textContent, 'auto');
+  assert.equal(element('setOutboundTlsBridge').textContent, 'ready');
+  assert.equal(element('setOutboundTlsRoute').textContent, 'bridge');
+  assert.equal(element('setOutboundTlsFallback').textContent, '-');
+  assert.equal(element('setOutboundTlsRetry').textContent, '可用');
 
   /* 6. 标记里每个 id 只能出现一次：`getElementById` 静默取文档顺序上的第一个，
      重复出来的第二个永远不会被回填，按钮改的也是第一个副本。实测 v1.9.2 设置页有两张
