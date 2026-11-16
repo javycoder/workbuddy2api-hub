@@ -1,3 +1,16 @@
+## v2.1.4
+
+- **跟进上游 v2.0.2 → v2.1.3 全部提交**（104 个）：请求列表失败详情与按账号 / 模型 / Key / 结果过滤、账号页桌面与移动端布局重排、账号分组与分组批量作用域、粘贴 JSON 导入与可搜索下拉、模型别名开关、Key 级日 token 限量与有界并发排队、单发 `/v1/messages` 稳定亲和、CodeArts 并发占满有界排队、统计时区开关（北京时间）、运营活动与成长任务补全、工具 Schema 关键字类型纠偏（11129）等；各条目详见下方 v2.0.2 – v2.1.3 段。冲突按「两边都留」解决：移动端布局取上游重排版，fork 的 `loadKeyModelCatalog` 三处语义修复保留。
+- **合入 PR niyouqianma#1（by Jemesnb）：重启后首轮积分刷新不再空等一个 tick**：`wb_accounts.CreditsRefresher` 新增 `FIRST_TICK_DELAY = 20`，`run()` 首轮只等 20 秒，之后恢复 `interval_seconds`；重启后面板不再停留在过期快照 + 本地估算扣减上。每 tick 仍只刷 1 个账号的请求预算不变；`consume_credit()` 的估算语义不动（不推进 `updated_at`）。新增 4 条断言并做过变异测试。
+- **合入 PR niyouqianma#3（by PolarisTime）：修复「工具结果早于工具调用」导致的 11148**：新增 `reorder_early_tool_results()` 在出站前把早于其调用的 `role:"tool"` 结果移到对应 `assistant(tool_calls)` 之后（只改顺序，call id 唯一所以无损）；`merge_adjacent_tool_calls()` 放宽为允许带文本的相邻批次合并（文本与 reasoning 一并保留）。接入 `build_upstream_body()` 修复管线：`merge_adjacent_tool_calls → reorder_early_tool_results → repack_tool_result_blocks → cleanup_orphan_tool_calls`。孤儿调用 / 孤儿结果 / `call_id` 不匹配仍由原逻辑清理。
+- **Key 模型准入：绑定出口失败不再跨出口回退**（fork 独有，延续 37d7d45）：绑定固定出口的 API Key 取该出口目录失败时不再退回不带 realm 的全量清单与 models 页缓存，保持为空并显示重试；失败结果不写分区缓存；清单缓存键纳入当前可用出口集合，CodeArts 启用状态变化后 all 分区会重新取数。
+- **合入 PR M-strange#3（by qq928820655）：发版门禁补 `actions: read`**：`release.yml` 的 `permissions` 只声明了 `contents: write`，GitHub 会把未列出的作用域一律置为 `none`，`required tests` 门禁查询 Actions API（`/actions/workflows`、`/actions/runs/...`）时 403，tag 触发的发布走不到打包。补上只读的 `actions: read`。
+- **合入 PR M-strange#5（by qq928820655）：手机端抽屉遮罩恢复可点**：窄屏（`max-width:860px`）展开侧栏时，遮罩显示规则是类选择器 `html[data-ui="next"] .next-sidebar-backdrop`，被上方特异度更高的 `#nextSidebarBackdrop{display:none}` 压住，遮罩恒为 0×0、`onclick` 收不到点击、抽屉收不起。窄屏两条规则改用 ID 选择器并与抽屉共用 `body.next-sidebar-open`。新增 `tests/_test_sidebar_backdrop.js`（11 项）。
+- **合入 PR M-strange#4（by qq928820655）：窄屏筛选条恢复横排**：`max-width:700px` 下 `.acct-filterbar` / `.recent-filterbar` 纵向堆叠后，`.console-search` 的 `flex:1 1 220px` 里 220px 从宽度基准变成高度基准，搜索框被撑成空白块、筛选条高达 461px。改回横排：搜索框独占一行（`flex-basis:100%` + `height:auto`）、下拉每行两个（`flex:1 1 40%`、`min-width:120px`）。新增 `tests/_test_filterbar_mobile_layout.js`。
+- **合入 PR M-strange#2（by flyhelanman）：外部账号接口与接口管理模块**：外部系统用独立的外部接口密钥（`sk-ext-` + 192 bit 随机，恒定时间比较）调用——生成授权链接、查询授权状态、拉脱敏账号列表（白名单六字段，token / proxy / 凭证掩码等不出网）；realm 参数区分国内 / 国际版；授权请求绑定创建它的密钥（他钥一律 404，无法替原钥兑换 token）；调用记录分页 20 条、2MB / 5000 条上限、未鉴权 401 不落盘、日志脱敏；密钥文件 0600 原子写、软删除防复活；面板新增「接口」菜单。review 核实安全面全部通过；跟进修复：压缩水位降 75%（不再每写一条全量重写 2MB）、密钥比较字节化（非 ASCII Bearer 不再 500）、菜单短标签补英文词典、`/v1/accounts` 排除 CORS 广播。新增 3 个套件（routes / store / ui）。
+- **review 跟进修复：相邻批次合并对畸形 content 的防御**：review PR niyouqianma#3 时发现 `_merge_assistant_content` 两个混排分支只检查一侧类型——prev 为标量且 next 为 str 时 `list(prev)` 抛 `TypeError` 中断出站构造（请求 500）；prev 为 str 且 next 为 dict 时 `list(next)` 把 dict 键拼进 parts 产出损坏形状。收紧为 str+list / list+str 组合判断，其余折叠为 None（保留原值、由上游拒绝该形状）。补 9 项断言。
+- 全量测试：**311 个套件：231 个 Python + 80 个 JS，`311 passed, 0 failed, 0 skipped`**；`scripts/check_clean_checkout.py` 干净。隔离实例（8799）冒烟：服务启动无报错、面板加载 / 登录 / 管理端点 200（本机无账号凭证，端到端上游链路由 PR 作者环境与 CI 矩阵覆盖）。
+
 ## v2.1.3
 
 - **CodeArts 并发占满改为有界排队**（#886 / #887）：单账号并发槽被占满时最多等待 `busy_wait_seconds`（默认 10 秒，范围 0–120），名额释放通过 `Condition` 立即唤醒；超时返回可重试的 429 `rate_limit_error` 并带 `reset_at`，不再误报 502「没有可用的账号」。真正空池 / 全停用 / 全冷却仍提示添加账号；多账号仍优先选空闲账号。
