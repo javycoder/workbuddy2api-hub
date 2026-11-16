@@ -4323,6 +4323,16 @@ class CreditsRefresher(threading.Thread):
     refresh age settles a little above the TTL. That is the intended trade:
     the preference is measured in days, so a few extra hours of drift is worth
     far less than the calls it saves.
+
+    The first tick after a start is the one exception to the half-hour rhythm:
+    it fires after FIRST_TICK_DELAY (20s) instead of a full interval, because a
+    restart would otherwise serve a stale on-disk snapshot for the whole first
+    tick. One refresh of a CN account is 3-6 billing requests in the normal case
+    (summary + free/paid package pages + check-in probe), not a single call, so
+    each process start spends roughly one extra refresh's worth. The
+    steady-state cap of 48 refreshes a day is unchanged; a deployment that
+    restarts often should read this constant as "restart frequency buys billing
+    calls", not as a free change.
     """
 
     def __init__(self, pool, interval_seconds=1800):
@@ -4426,9 +4436,27 @@ class CreditsRefresher(threading.Thread):
                             (" · " + tier["package"]) if tier.get("package") else ""))
             return account.uid
 
+    #: 启动后第一次 tick 的等待时间。
+    #:
+    #: 用短等待而不是「立刻刷」：`refresh_once()` 会同步打上游计费接口
+    #: （summary 超时 15 秒、CN 详细路径还有 30 秒的 fallback），放在进程启动
+    #: 的第一瞬间会和登录、面板首屏抢同一条出口。20 秒只是把这次调用从「进程刚
+    #: 起来的那一刻」挪开一点，它**并不**与启动阶段的所有一次性工作完全错开——
+    #: 调度器的初次巡检在 t≈10s 开始，更新检查器在 t≈30s，都可能与这一轮重叠。
+    #: 重叠本身是安全的（`fetch_credits()` 有 `_credits_lock`，同一账号不会并发
+    #: 打上游），代价只是某些启动方式下可能多一次计费请求。
+    #:
+    #: 调用方（wb_proxy 的 _bootstrap_runtime）已经同步跑完 POOL.load() 和
+    #: SCHEDULER.start()，所以这里不需要靠等待来规避「池子还没填好」的竞态。
+    FIRST_TICK_DELAY = 20.0
+
     def run(self):
+        # 第一轮用最短延迟：重启后磁盘上的快照可能已经超过 TTL，等满一个
+        # interval_seconds 就意味着用户要盯着昨天（甚至前天）的数字半小时。
+        delay = self.FIRST_TICK_DELAY
         while not self._stop_event.is_set():
-            self._wake.wait(timeout=self.interval_seconds)
+            self._wake.wait(timeout=delay)
+            delay = self.interval_seconds
             if self._stop_event.is_set():
                 break
             self._wake.clear()

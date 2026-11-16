@@ -424,6 +424,130 @@ class CreditsRefresherTests(unittest.TestCase):
         # 失败后一小时内不再重试同一个账号，免得每个 tick 都打上游。
         self.assertIsNone(refresher.stalest_account(refresher.ttl_seconds()))
 
+    def test_first_tick_does_not_wait_a_full_interval(self):
+        """重启后第一轮必须尽快跑，不能先干等一个 interval。
+
+        进程重启时内存里没有任何余额，全靠磁盘上那份可能是几小时（甚至几天）
+        前的快照。旧实现的第一句就是 `_wake.wait(timeout=self.interval_seconds)`，
+        于是默认配置下用户要盯着昨天的数字整整半小时才等到第一次刷新。
+
+        这里用一个记录 timeout 的假 `_wake` 精确断言「第 N 轮等了多久」，
+        而不是靠 sleep 去猜。真正 sleep 的写法只能证明「1 秒内发生过一次」，
+        既抓不到「之后每轮没有回到 interval」，也钉不住生产值。
+        """
+        waits = []
+        refresher = self._driven_refresher(waits, tick_count=2)
+        refresher.start()
+        try:
+            self._wait_until(lambda: len(waits) >= 2, timeout=3.0)
+        finally:
+            refresher.stop()
+            refresher.join(timeout=3)
+
+        self.assertGreaterEqual(len(waits), 2, "至少应观察到两轮等待")
+        self.assertEqual(waits[0], wb_accounts.CreditsRefresher.FIRST_TICK_DELAY,
+                         "第一轮必须用 FIRST_TICK_DELAY")
+        self.assertLess(waits[0], refresher.interval_seconds,
+                        "首轮必须比常规间隔短")
+
+    def test_the_production_first_tick_delay_is_a_short_one(self):
+        """钉住生产值本身。
+
+        上一条测的是「循环第一轮用了 FIRST_TICK_DELAY」，取的是类常量；
+        它测不出这个常量被改成 0 或者删掉——而那正是本次要修的行为。
+        20 秒是给启动阶段一次性工作留的窗口，绝不是半小时级。
+        """
+        delay = wb_accounts.CreditsRefresher.FIRST_TICK_DELAY
+        self.assertIsInstance(delay, (int, float))
+        self.assertGreater(delay, 0, "首轮延迟必须为正数（0 等于立刻刷）")
+        self.assertLessEqual(delay, 120.0, "首轮延迟必须是短等待，不是十分钟级")
+        default_interval = wb_accounts.CreditsRefresher(
+            wb_accounts.AccountPool(tempfile.mkdtemp(prefix="dflt-"),
+                                    log=lambda _m: None)).interval_seconds
+        self.assertLess(delay * 10, default_interval,
+                        "首轮延迟应比默认 tick 小一个数量级以上")
+
+    def test_later_ticks_fall_back_to_the_configured_interval(self):
+        """首轮之后必须回到 interval，不能一直用首轮延迟狂刷上游。
+
+        FIRST_TICK_DELAY 是一次的特例，不是新的常规节奏。少了 run() 里的
+        `delay = self.interval_seconds` 这一行，整个循环都会按首轮延迟跑，
+        上游计费调用会被打爆——而 RefreshCadenceTests 全部直接驱动
+        `refresh_once()`，绕过了循环，抓不到这个问题。
+
+        同样用假 `_wake` 断言「第二轮及之后等的正好是 interval」，而不是
+        「等了 1.5 秒还没刷」——后者对任何 ≥1.6 秒的延迟都放行。
+        """
+        waits = []
+        refresher = self._driven_refresher(waits, tick_count=3)
+        refresher.start()
+        try:
+            self._wait_until(lambda: len(waits) >= 3, timeout=3.0)
+        finally:
+            refresher.stop()
+            refresher.join(timeout=3)
+
+        self.assertGreaterEqual(len(waits), 3, "至少应观察到三轮等待")
+        for index, waited in enumerate(waits[1:], start=2):
+            self.assertEqual(waited, refresher.interval_seconds,
+                             "第 %d 轮必须回到 interval，不能用首轮延迟" % index)
+
+    # -- 上面几条共用的桩 ---------------------------------------------------
+
+    def _driven_refresher(self, waits, tick_count=3):
+        """一个不会真的 sleep 的 CreditsRefresher。
+
+        `_wake.wait()` 换成记录 timeout 后立刻返回的假实现，`refresh_once()`
+        换成计数器；喂够 tick_count 轮之后让循环自行停下。
+        """
+        account = self._account("driven", None, fetch=lambda: {"ok": True})
+        _, pool = self._pool_with([account], hours=1)
+        refresher = wb_accounts.CreditsRefresher(pool, interval_seconds=60.0)
+
+        def fake_wait(timeout=None):
+            waits.append(timeout)
+            if len(waits) > tick_count:
+                refresher._stop_event.set()
+            return True
+
+        refresher._wake = type("FakeWake", (), {
+            "wait": staticmethod(fake_wait),
+            "set": lambda _self: None,
+            "clear": lambda _self: None,
+        })()
+        refresher.refresh_once = lambda now=None: None
+        return refresher
+
+    def _wait_until(self, predicate, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline and not predicate():
+            time.sleep(0.02)
+        return predicate()
+
+    def test_local_estimate_does_not_fake_a_fresh_snapshot(self):
+        """本地扣减不能改写 updated_at。
+
+        consume_credit() 按上游回报的 credit 逐请求扣减余额，扣的是估算值。
+        如果把 updated_at 一并推进，stalest_account() 就会认为这个账号刚同步
+        过，于是繁忙账号永远轮不到真正的上游刷新——面板上的数字会越走越偏。
+        这条钉住「扣减 ≠ 刷新」这个边界，防止以后有人为了让数字看起来新一点
+        而顺手改 updated_at。
+        """
+        blob = {"remain": 100.0, "used": 0.0, "size": 100.0, "packages": [],
+                "updated_at": time.time() - 7 * 3600}
+        account = make_account("spendy", credits=blob)
+        before = blob["updated_at"]
+        account.consume_credit(2.5)
+        self.assertEqual(account.credits["remain"], 97.5)
+        self.assertEqual(account.credits["used"], 2.5)
+        self.assertEqual(account.credits["updated_at"], before,
+                         "updated_at 仍然只表示上游快照时刻")
+        # 扣减之后仍然算「过期」，下个 tick 依旧会被挑去真刷。
+        _, pool = self._pool_with([account])
+        refresher = wb_accounts.CreditsRefresher(pool)
+        self.assertEqual(refresher.stalest_account(refresher.ttl_seconds()).uid,
+                         "spendy")
+
     def test_disabled_accounts_are_skipped(self):
         account = self._account("off-account", None)
         account.enabled = False
